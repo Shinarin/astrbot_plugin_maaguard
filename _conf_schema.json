@@ -1,0 +1,37 @@
+{
+  "analyzer_config_path": {
+    "description": "analyzer 的 config.json 路径，填写后监听群与文件名前缀以 analyzer 为准",
+    "type": "string",
+    "default": "",
+    "hint": "例如 /opt/maalog/config.json。留空则完全使用本插件下方的本地配置；读取失败或未找到可用配置时自动回退本地配置"
+  },
+  "file_prefix": {
+    "description": "日志包文件名前缀，必须与 analyzer 配置里的 file_prefix 一致",
+    "type": "string",
+    "default": "MaaXXX-logs",
+    "hint": "analyzer 只识别以该前缀开头、以 .zip 结尾的文件"
+  },
+  "listen_groups": {
+    "description": "启用本插件的群号列表，需与 analyzer 的 listen_groups 保持一致",
+    "type": "list",
+    "default": [],
+    "hint": "留空则本插件完全不生效。修改后需重载插件"
+  },
+  "command_prefix": {
+    "description": "analyzer 的指令前缀",
+    "type": "string",
+    "default": "/maa"
+  },
+  "analysis_header_keywords": {
+    "description": "识别 analyzer 分析结果消息的关键词，用于判断引用追问",
+    "type": "list",
+    "default": ["日志分析结果"],
+    "hint": "analyzer 发出的分析结果消息里包含这些词时，引用它的追问会被本插件静默拦截"
+  },
+  "intent_keywords": {
+    "description": "判断群友想分析日志的文本关键词（纯文本消息命中时发送提醒）",
+    "type": "list",
+    "default": ["分析日志", "日志分析", "分析下日志", "看下日志", "看看日志", "帮忙看日志"],
+    "hint": "命中这些词的纯文本消息会被视为想分析日志但没传文件，Bot 会提醒正确做法。可按群习惯增删"
+  }
+}
