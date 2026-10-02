@@ -28,6 +28,24 @@
     "default": ["日志分析结果"],
     "hint": "analyzer 发出的分析结果消息里包含这些词时，引用它的追问会被本插件静默拦截"
   },
+  "gate_enabled": {
+    "description": "门槛模式：文件上传先由模型判定是否想分析日志，判定为是才转发 analyzer",
+    "type": "bool",
+    "default": true,
+    "hint": "需要 analyzer 启用 gate（config.json 里 gate.enabled=true）并与其 token 保持一致。模型不可用或 analyzer 拒绝时自动回退旧规则"
+  },
+  "gate_analyzer_url": {
+    "description": "analyzer 本地 gate API 地址",
+    "type": "string",
+    "default": "http://127.0.0.1:8090",
+    "hint": "仅监听 127.0.0.1，不对公网开放"
+  },
+  "gate_token": {
+    "description": "analyzer gate API 的鉴权 token",
+    "type": "string",
+    "default": "",
+    "hint": "与 analyzer config.json 里 gate.token 一致；analyzer 未设置 token 时留空"
+  },
   "intent_keywords": {
     "description": "判断群友想分析日志的文本关键词（纯文本消息命中时发送提醒）",
     "type": "list",

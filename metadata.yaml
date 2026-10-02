@@ -1,6 +1,6 @@
 name: astrbot_plugin_maaguard
-desc: MAA 日志分析守门插件。配合独立运行的 OnebotMaaLogAnalyzer：静默拦截会触发日志分析的消息，避免 AstrBot 与 analyzer 双重回复；群友格式不对时提醒正确做法。
-version: v0.2.0
+desc: MAA 日志分析守门插件。配合独立运行的 OnebotMaaLogAnalyzer：静默拦截会触发日志分析的消息，避免 AstrBot 与 analyzer 双重回复；门槛模式下用模型判定上传意图再转发 analyzer；群友格式不对时提醒正确做法。
+version: v0.3.0
 author: Shinarin
 repo: https://github.com/Shinarin/astrbot_plugin_maaguard
 support_platforms:

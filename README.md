@@ -14,9 +14,47 @@ OnebotMaaLogAnalyzer 是一个独立运行的 OneBot v11 Bot（不依赖任何 B
 本插件的职责：
 
 1. **该 analyzer 说话的场景，让 AstrBot 闭嘴**（静默拦截，零回复）
-2. **群友操作不对时，主动指路**（@当事人 + 正确做法提醒）
+2. **门槛模式（默认）**：群友上传的任何 zip/文件，先由模型（AstrBot 已配置的 LLM）判断是不是想分析日志，是才把文件转发给 analyzer 分析
+3. **群友操作不对时，主动指路**（@当事人 + 正确做法提醒）
 
 > 本插件**不分析日志**。所有分析行为都发生在独立运行的 OnebotMaaLogAnalyzer 进程里。
+
+## 门槛模式（v0.3.0 新增，默认开启）
+
+不再只靠文件名前缀猜测意图，而是让模型结合上下文判断：
+
+```text
+群友上传 zip/文件
+        │
+        ▼
+ 本插件：调用 AstrBot 已配置的模型 ──判定──► 想分析日志？
+        │                                 │
+       是│                              否│
+        ▼                                 ▼
+ POST analyzer 本地 gate API          静默放行
+ （analyzer 正常分析并回复群里）       （AstrBot 也不搭话）
+```
+
+- 判定的输入：文件名、文件大小、同一条消息里的附言（如"帮我看看为什么报错"）
+- 判定用的模型就是 AstrBot 当前配置的对话模型，**无需额外配置 API**
+- analyzer 侧需要开启 gate（见下），开启后 analyzer 不再按文件名前缀自动触发，只接受本插件转发来的任务
+- 判定输出无法解析 / 模型不可用 / analyzer 拒绝时，自动回退旧的文件名前缀规则与提醒
+- 文件名格式从此不再影响触发（`debug.zip` 只要模型判定有分析意图也会被分析），旧的"格式不对"提醒只在回退路径出现
+
+### analyzer 侧需要增加的 gate 配置
+
+analyzer 的 `config.json` 增加一段（开启后其自动触发只保留 `/maa` 指令与追问答疑，文件上传改由本插件转发）：
+
+```json
+"gate": {
+  "enabled": true,
+  "host": "127.0.0.1",
+  "port": 8090,
+  "token": "与本插件 gate_token 一致的随机字符串"
+}
+```
+
+`gate.token` 与插件配置的 `gate_token` 保持一致即可；analyzer 未设置 token 时插件侧也留空。
 
 ## 与 OnebotMaaLogAnalyzer 的配合
 
@@ -24,10 +62,10 @@ OnebotMaaLogAnalyzer 是一个独立运行的 OneBot v11 Bot（不依赖任何 B
 
 ```text
                         ┌─► AstrBot (6199) ──► 加载本插件 maaguard
- 群友消息 ──► NapCat ────┤         （该闭嘴时闭嘴，格式不对时提醒）
- (OneBot v11 实现)       │
-                        └─► OnebotMaaLogAnalyzer (8080)
-                                  （下载日志包 → 摘要 → AI 分析 → 发回群里）
+ 群友消息 ──► NapCat ────┤      （模型判定上传意图 ──转发──► analyzer 本地 gate API :8090）
+ (OneBot v11 实现)       │        （该闭嘴时闭嘴，异常时提醒）
+                         └─► OnebotMaaLogAnalyzer (8080)
+                                   （下载日志包 → 摘要 → AI 分析 → 发回群里）
 ```
 
 两个程序各自与 NapCat 建立独立的 WebSocket 连接，互不感知；本插件是唯一知道"另一个 Bot 存在"的协调者。
@@ -36,10 +74,11 @@ OnebotMaaLogAnalyzer 是一个独立运行的 OneBot v11 Bot（不依赖任何 B
 
 | 场景 | OnebotMaaLogAnalyzer | 本插件（AstrBot 侧） |
 |---|---|---|
-| 上传 `MaaXXX-logs*.zip` | 下载、分析、回复结论 | 静默拦截 AstrBot |
+| 上传文件（模型判定想分析日志） | 接收转发、分析、回复结论 | 判定 + 转发 + 静默拦截 AstrBot |
+| 上传文件（模型判定无关） | 不处理 | 静默拦截 AstrBot |
 | `/maa` 系列指令 | 应答 | 静默拦截 AstrBot |
 | 引用分析结果追问 | 基于日志继续答疑 | 静默拦截 AstrBot |
-| 文件格式不对（改名/7z/散文件） | 不处理 | @当事人发送正确做法提醒 |
+| 模型不可用时的格式不对文件 | 不处理（gate 模式不会自动触发） | 回退旧规则：命中前缀照样转发，疑似日志包 @当事人提醒 |
 | 嘴上说要分析日志但没传文件 | 不处理 | 发送提醒 |
 | 普通聊天 | 不处理 | 完全不干预 |
 
@@ -81,6 +120,9 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `analyzer_config_path` | string | `""` | analyzer 的 `config.json` 路径。**填写后监听群与前缀以 analyzer 为准**，读取失败自动回退下方本地配置；留空则完全使用本地配置 |
+| `gate_enabled` | bool | `true` | 门槛模式：文件上传先由模型判定意图再转发 analyzer。需要 analyzer 开启 gate 并正确填写下面两项 |
+| `gate_analyzer_url` | string | `"http://127.0.0.1:8090"` | analyzer 本地 gate API 地址（仅监听 127.0.0.1） |
+| `gate_token` | string | `""` | analyzer gate API 的鉴权 token，需与 analyzer `config.json` 里 `gate.token` 一致 |
 | `file_prefix` | string | `"MaaXXX-logs"` | 日志包文件名前缀。配置了 `analyzer_config_path` 时仅作回退 |
 | `listen_groups` | list | `[]` | 启用本插件的群号列表。配置了 `analyzer_config_path` 时仅作回退；两处都为空时插件不生效 |
 | `command_prefix` | string | `"/maa"` | analyzer 的指令前缀，用于拦截 AstrBot 对 `/maa` 指令的应答 |
@@ -89,35 +131,42 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 
 ## 行为规则
 
-插件只在生效的监听群内、且仅对 aiocqhttp 平台起作用：
+插件只在生效的监听群内、且仅对 aiocqhttp 平台起作用。门槛模式（默认）下：
 
 | 场景 | 行为 |
 |---|---|
-| 群文件上传 notice（文件名 = 前缀 + `.zip`） | 静默拦截（analyzer 会处理） |
-| 群文件上传 notice（文件名与日志无关） | 静默拦截（AstrBot 无需搭话） |
-| 消息内 file 段（文件名 = 前缀 + `.zip`） | 静默拦截 |
-| 消息内 file 段（疑似日志包但格式不对） | @当事人发送提醒 + 拦截 |
+| 上传文件（模型判定想分析日志，analyzer 受理） | 静默拦截（analyzer 会分析并回复） |
+| 上传文件（模型判定想分析日志，analyzer 拒绝，如超 100MB） | @当事人说明拒绝原因 + 拦截 |
+| 上传文件（模型判定与日志无关） | 静默拦截 |
+| 上传文件（模型不可用，回退旧规则） | 命中前缀 → 照样转发 analyzer；疑似日志包 → @当事人发送提醒；无关文件 → 静默拦截 |
+| 分析工具联系不上 | @当事人提示稍后重试 + 拦截 |
 | `/maa` 开头的指令 | 静默拦截 |
 | 引用 Bot 发出的分析结果消息追问 | 静默拦截（analyzer 负责答疑） |
 | 纯文本命中意图关键词但没传文件 | 发送提醒 + 拦截 |
 | 其他所有消息 | 完全不干预 |
 
+在插件配置里把 `gate_enabled` 设为 `false` 可回到纯前缀匹配的旧行为（保留兼容）。
+
 两个实现细节：
 
-- **提醒去重**：QQ 一次文件上传会产生"上传通知 + 文件消息"两个事件，同一 (群, 文件名) 在 120 秒内只提醒一次
-- **决策日志**：所有拦截/提醒都有 `[maaguard]` 前缀的日志，排查问题时先看日志
+- **判定/提醒去重**：QQ 一次文件上传会产生"上传通知 + 文件消息"两个事件，同一 (群, 文件名) 在 120 秒内只判定/转发/提醒一次
+- **决策日志**：所有拦截/判定/转发都有 `[maaguard]` 前缀的日志，排查问题时先看日志
 
 ## 典型使用流程
 
-1. 群友上传 `MaaXXX-logs-20260928-120000.zip` → 群里只有 analyzer 的分析结论，AstrBot 不出声
-2. 群友上传 `debug.zip` / `logs.7z` → 本插件 @他并给出正确做法（示例名按 analyzer 的前缀生成）
+1. 群友上传日志压缩包（叫什么名字都行，最好带上说明） → 模型判定为想分析日志 → analyzer 分析并把结论发回群里，AstrBot 不出声
+2. 群友上传与日志无关的文件 → 无人搭话，不打扰
 3. 群友引用分析结果追问"这个报错怎么解决" → analyzer 继续回答，AstrBot 不插嘴
 4. 群友发 `/maa 状态` → analyzer 应答
+5. （回退路径）模型不可用时，群友上传命中前缀的日志包仍会照常分析；上传 `logs.7z` 这类疑似日志包会收到格式提醒
 
 ## 常见问题
 
-**传了正确的日志包，两边都没反应？**
-analyzer 没部署/没连上，或被本插件拦截后 analyzer 侧出错。查 analyzer 日志（`journalctl -u maalog` 或其 `logs/` 目录）。
+**传了日志包，两边都没反应？**
+先看 AstrBot 日志 `[maaguard]` 行：模型判定是不是 NO（文件名/附言没体现出分析意图时可能误判，可以让群友附言"帮忙分析日志"重试）；是不是转发失败（analyzer 的 gate 没开/token 不一致/服务没起）。再查 analyzer 日志（`journalctl -u maalog` 或其 `logs/` 目录）。
+
+**analyzer 侧如何确认 gate 已生效？**
+analyzer 启动日志里应有 `[门槛] 本地 API 已启动: http://127.0.0.1:8090`；`curl http://127.0.0.1:8090/health` 应返回 `{"ok": true}`。
 
 **提醒的内容和 analyzer 的前缀对不上？**
 `analyzer_config_path` 未配置或读取失败（看 AstrBot 日志里的 `[maaguard]` 警告），此时用的是本地 `file_prefix`。
@@ -133,6 +182,7 @@ analyzer 没部署/没连上，或被本插件拦截后 analyzer 侧出错。查
 
 ## 更新日志
 
+- **v0.3.0**：新增门槛模式（默认开启）——文件上传由模型判定意图后转发 analyzer 本地 gate API；模型异常/analyzer 拒绝自动回退旧规则；新增 `gate_enabled` / `gate_analyzer_url` / `gate_token` 配置
 - **v0.2.0**：新增 `analyzer_config_path` 自动同步；提醒按 (群, 文件名) 去重；增加 `[maaguard]` 决策日志
 - **v0.1.0**：初始版本（静默拦截 + 格式提醒）
 
