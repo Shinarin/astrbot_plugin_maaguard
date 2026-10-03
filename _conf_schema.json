@@ -46,6 +46,29 @@
     "default": "",
     "hint": "与 analyzer config.json 里 gate.token 一致；analyzer 未设置 token 时留空"
   },
+  "cs_enabled": {
+    "description": "MaaNikke 客服：在监听群内回答使用问题，README 知识注入 + 源码读取工具",
+    "type": "bool",
+    "default": true
+  },
+  "cs_keywords": {
+    "description": "触发客服知识注入的关键词（对群消息做子串匹配，不区分大小写）",
+    "type": "list",
+    "default": ["maanikke", "nikke", "妮姬", "胜利女神", "每日任务", "自动化", "脚本", "maa"],
+    "hint": "留空表示监听群内所有消息都注入知识（费 token，不建议）"
+  },
+  "cs_repo_path": {
+    "description": "MaaNikke 源码仓库本地路径（供 LLM 工具搜索/读取源码）",
+    "type": "string",
+    "default": "/opt/maanikke-src",
+    "hint": "git clone https://github.com/Shinarin/MaaNikke 到该路径；更新源码在该目录执行 git pull"
+  },
+  "cs_readme_path": {
+    "description": "客服知识库文件路径（MaaNikke README 要点）",
+    "type": "string",
+    "default": "",
+    "hint": "留空使用插件内置 knowledge/maanikke_readme.md；想换内容可填自己的文件路径"
+  },
   "intent_keywords": {
     "description": "判断群友想分析日志的文本关键词（纯文本消息命中时发送提醒）",
     "type": "list",

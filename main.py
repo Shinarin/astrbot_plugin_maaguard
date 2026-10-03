@@ -14,6 +14,8 @@ MAA 日志分析"守门"插件，配合独立运行的 OnebotMaaLogAnalyzer（�
 
 import asyncio
 import json
+import os
+import re
 import time
 
 import aiohttp
@@ -21,6 +23,9 @@ import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
+
+PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_README_PATH = os.path.join(PLUGIN_DIR, "knowledge", "maanikke_readme.md")
 
 MATCH = "match"
 NEAR_MISS = "near_miss"
@@ -55,6 +60,31 @@ GATE_HINT = (
     "整个压成 1 个 zip 发上来即可——不用改名，也别用软件自带导出"
     "（会拆成多个包），最好带一句「帮忙分析日志」。"
 )
+
+# ── MaaNikke 客服 ─────────────────────────────────────
+
+# 命中这些关键词的群消息，会在 LLM 请求时注入 README 知识（空列表 = 全部注入）
+DEFAULT_CS_KEYWORDS = [
+    "maanikke", "nikke", "妮姬", "胜利女神", "每日任务",
+    "自动化", "脚本", "maa",
+]
+
+CS_SYSTEM_PROMPT = """
+
+【MaaNikke 客服模式】群友可能在询问 MaaNikke（《胜利女神：NIKKE》每日任务自动化工具）的使用问题。请优先根据下面的 README 资料准确回答；资料没覆盖的复杂问题（节点行为、选项含义、源码逻辑、报错原因），请调用工具 maanikke_source_search（在源码仓库中搜索关键词）和 maanikke_source_read（读取仓库内指定文件）查证后再回答。回答要求：像群里的客服，口语化、先给结论再给步骤，不要整段照搬资料；如果群友的问题其实与 MaaNikke 无关，正常聊天即可，不要硬套资料。
+
+【MaaNikke README 资料】
+{knowledge}"""
+
+# 源码搜索时跳过的目录与二进制后缀
+_SKIP_DIRS = {".git", "runtimes", "libs", "node_modules", "__pycache__", ".vs", ".idea"}
+_SKIP_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".exe", ".dll",
+    ".so", ".dylib", ".zip", ".7z", ".rar", ".onnx", ".bin", ".pyc", ".pdb",
+    ".msi", ".woff", ".woff2", ".ttf", ".mp4", ".mkv",
+}
+_MAX_FILE_BYTES = 512 * 1024
+_SEARCH_RESULT_MAX_CHARS = 6000
 
 # 上传意图判定提示词：只要求输出 YES / NO，便于严格解析
 INTENT_JUDGE_PROMPT = """你在一个 QQ 群里，群里的机器人提供「MaaNikke 自动化脚本日志分析」服务：群友上传日志压缩包，机器人下载、提取报错并用 AI 分析原因。
@@ -180,6 +210,63 @@ class MaaGuardPlugin(Star):
 
     def _gate_token(self) -> str:
         return str(self._cfg("gate_token", "") or "").strip()
+
+    # ── MaaNikke 客服 ────────────────────────────────────
+
+    def _cs_enabled(self) -> bool:
+        return bool(self._cfg("cs_enabled", True))
+
+    def _cs_keywords(self) -> list[str]:
+        keywords = self._cfg("cs_keywords", DEFAULT_CS_KEYWORDS) or []
+        return [str(k).lower() for k in keywords if str(k).strip()]
+
+    def _cs_repo_path(self) -> str:
+        path = str(self._cfg("cs_repo_path", "/opt/maanikke-src") or "").strip()
+        return path or "/opt/maanikke-src"
+
+    def _cs_readme_path(self) -> str:
+        return str(self._cfg("cs_readme_path", "") or "").strip() \
+            or DEFAULT_README_PATH
+
+    def _load_cs_knowledge(self) -> str:
+        """读取 README 知识库（按 mtime 缓存，读失败返回空串）。"""
+        path = self._cs_readme_path()
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            logger.warning(f"[maaguard] 客服知识库不存在: {path}")
+            return ""
+        cached = getattr(self, "_cs_knowledge_cache", None)
+        if cached and cached[0] == path and cached[1] == mtime:
+            return cached[2]
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read().strip()
+        except OSError as exc:
+            logger.warning(f"[maaguard] 客服知识库读取失败: {exc}")
+            return ""
+        self._cs_knowledge_cache = (path, mtime, text)
+        return text
+
+    def _cs_keyword_hit(self, text: str) -> bool:
+        keywords = self._cs_keywords()
+        if not keywords:  # 空列表 = 不筛选，监听群内消息一律注入
+            return True
+        lower = (text or "").lower()
+        return any(k in lower for k in keywords)
+
+    @staticmethod
+    def _latest_user_text(req) -> str:
+        prompt = str(getattr(req, "prompt", "") or "").strip()
+        if prompt:
+            return prompt
+        contexts = getattr(req, "contexts", None) or []
+        for msg in reversed(contexts):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+        return ""
 
     # ── analyzer 配置同步（可选） ────────────────────────
 
@@ -410,6 +497,127 @@ class MaaGuardPlugin(Star):
                 logger.warning(f"[maaguard] analyzer 不可达: {reason}")
                 yield event.chain_result(self._at_chain(
                     event, GATE_DOWN_REMINDER.format(detail=reason)))
+
+    # ── MaaNikke 客服：知识注入 + 源码工具 ─────────────
+
+    @filter.on_llm_request()
+    async def cs_inject_knowledge(self, event: AstrMessageEvent, req) -> None:
+        """监听群内的 MaaNikke 相关问题，在 LLM 请求中注入 README 知识。"""
+        if not self._cs_enabled() or event is None or req is None:
+            return
+        try:
+            group_id = event.get_group_id()
+        except Exception:
+            return
+        groups = self._listen_groups()
+        if not groups or group_id is None or str(group_id) not in groups:
+            return
+        text = self._latest_user_text(req)
+        if not text or not self._cs_keyword_hit(text):
+            return
+        knowledge = self._load_cs_knowledge()
+        if not knowledge:
+            return
+        req.system_prompt = (getattr(req, "system_prompt", "") or "") \
+            + CS_SYSTEM_PROMPT.format(knowledge=knowledge)
+        logger.info("[maaguard] 客服模式：已注入 MaaNikke README 知识")
+
+    # ── 源码工具（供 AstrBot 的 LLM 工具循环/agent 调用） ──
+
+    def _repo_root(self) -> str:
+        return os.path.realpath(self._cs_repo_path())
+
+    def _safe_repo_file(self, path: str):
+        """把用户给的 path 解析到仓库内；越界返回 None。"""
+        root = self._repo_root()
+        candidate = os.path.realpath(os.path.join(root, path))
+        if candidate != root and not candidate.startswith(root + os.sep):
+            return None
+        return candidate
+
+    def _repo_search(self, query: str, max_results: int = 10) -> str:
+        """在仓库内做大小写不敏感的子串搜索，返回 path:line: 文本片段。"""
+        root = self._repo_root()
+        if not os.path.isdir(root):
+            return (f"源码仓库未部署（期望路径 {root}）。"
+                    "请联系管理员执行：git clone https://github.com/Shinarin/MaaNikke "
+                    + root)
+        query = (query or "").strip()
+        if not query:
+            return "query 不能为空。"
+        max_results = max(1, min(int(max_results or 10), 30))
+        needle = query.lower()
+
+        matches: list[str] = []
+        per_file = 0
+        last_file = ""
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+            for fn in sorted(filenames):
+                if len(matches) >= max_results:
+                    break
+                ext = os.path.splitext(fn)[1].lower()
+                if ext in _SKIP_EXTS:
+                    continue
+                full = os.path.join(dirpath, fn)
+                try:
+                    if os.path.getsize(full) > _MAX_FILE_BYTES:
+                        continue
+                    with open(full, encoding="utf-8", errors="replace") as f:
+                        rel = os.path.relpath(full, root)
+                        per_file = 0 if rel != last_file else per_file
+                        for lineno, line in enumerate(f, 1):
+                            if needle in line.lower():
+                                matches.append(
+                                    f"{rel}:{lineno}: {line.strip()[:200]}"
+                                )
+                                last_file = rel
+                                per_file += 1
+                                if per_file >= 3 or len(matches) >= max_results:
+                                    break
+                except OSError:
+                    continue
+        if not matches:
+            return f"源码仓库中没有找到包含 {query!r} 的内容。"
+        out = "\n".join(matches)
+        if len(out) > _SEARCH_RESULT_MAX_CHARS:
+            out = out[:_SEARCH_RESULT_MAX_CHARS] + "\n…（结果已截断）"
+        return out
+
+    def _repo_read(self, path: str, max_chars: int = 8000) -> str:
+        """读取仓库内指定文件（相对路径）。"""
+        target = self._safe_repo_file(path)
+        if target is None:
+            return "path 必须是仓库内的相对路径，不允许越出仓库目录。"
+        if not os.path.isfile(target):
+            return f"仓库内不存在文件：{path}（可用 maanikke_source_search 先查找）"
+        ext = os.path.splitext(target)[1].lower()
+        if ext in _SKIP_EXTS:
+            return f"{path} 是二进制文件，无法以文本读取。"
+        try:
+            with open(target, encoding="utf-8", errors="replace") as f:
+                text = f.read(int(max_chars or 8000) + 1)
+        except OSError as exc:
+            return f"读取失败：{exc}"
+        truncated = len(text) > int(max_chars or 8000)
+        if truncated:
+            text = text[: int(max_chars or 8000)]
+        header = f"===== {path} =====\n"
+        return header + text + ("\n…（文件已截断）" if truncated else "")
+
+    @filter.llm_tool(name="maanikke_source_search")
+    async def cs_tool_search(self, event: AstrMessageEvent,
+                             query: str, max_results: int = 10) -> str:
+        """在 MaaNikke 源码仓库中搜索关键词，返回 文件:行号: 内容 片段。
+        仅用于回答 MaaNikke 使用/配置/源码相关的问题。"""
+        return self._repo_search(query, max_results)
+
+    @filter.llm_tool(name="maanikke_source_read")
+    async def cs_tool_read(self, event: AstrMessageEvent,
+                           path: str, max_chars: int = 8000) -> str:
+        """读取 MaaNikke 源码仓库内的文件内容。path 为仓库内相对路径
+        （如 resource/base/pipeline/xxx.json）。仅用于 MaaNikke 相关问题。"""
+        return self._repo_read(path, max_chars)
 
     def _is_analysis_quote(self, event: AstrMessageEvent, replies: list) -> bool:
         """被引消息是否为本 Bot 发出的分析结果（analyzer 会接管这类追问）。"""

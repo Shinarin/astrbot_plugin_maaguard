@@ -16,8 +16,42 @@ OnebotMaaLogAnalyzer 是一个独立运行的 OneBot v11 Bot（不依赖任何 B
 1. **该 analyzer 说话的场景，让 AstrBot 闭嘴**（静默拦截，零回复）
 2. **门槛模式（默认）**：群友上传的任何 zip/文件，先由模型（AstrBot 已配置的 LLM）判断是不是想分析日志，是才把文件转发给 analyzer 分析
 3. **群友操作不对时，主动指路**（@当事人 + 正确做法提醒）
+4. **MaaNikke 客服**：回答 MaaNikke 使用问题——README 知识注入 + 复杂问题调用源码读取工具（AstrBot 的 LLM 工具循环）查证后回答
 
 > 本插件**不分析日志**。所有分析行为都发生在独立运行的 OnebotMaaLogAnalyzer 进程里。
+
+## MaaNikke 客服（v0.4.0 新增）
+
+在监听群内，群友问到 MaaNikke（《胜利女神：NIKKE》每日任务自动化工具）的使用问题时，插件自动充当客服：
+
+```text
+群友提问："模拟室那个快速怎么开？" / "startnikke.ahk 找不到启动器"
+        │
+        ▼
+ 消息命中客服关键词（nikke / 妮姬 / 每日任务 / 脚本 …）
+        │
+        ▼
+ AstrBot 发起 LLM 请求时，自动注入 MaaNikke README 知识（内置 knowledge/maanikke_readme.md）
+        │
+        ▼
+ 模型直接依据 README 回答（环境要求、游戏内设置、任务选项、常见问题…）
+        │
+        └─ 资料没写的复杂问题 ──► 模型自行调用源码工具（AstrBot 工具循环 / agent）：
+                                  maanikke_source_search  在源码仓库里搜关键词
+                                  maanikke_source_read    读取仓库内指定文件
+                                         │
+                                         ▼
+                                  结合源码逻辑给出答案
+```
+
+特点：
+
+- **不干扰正常聊天**：只有命中关键词的群消息才注入知识；其他话题照常由 AstrBot 的人格回答
+- **不需要额外配置 API**：复用 AstrBot 已配置的对话模型与工具调用（function calling）能力
+- **README 可更新**：替换插件目录下 `knowledge/maanikke_readme.md`，或配置 `cs_readme_path` 指向自己的文件（按 mtime 自动刷新缓存）
+- **源码仓库需要先部署**：`git clone https://github.com/Shinarin/MaaNikke /opt/maanikke-src`（默认路径，可用 `cs_repo_path` 修改）；更新源码在该目录 `git pull`。仓库缺失时工具会返回提示，不影响 README 问答
+
+工具只在 MaaNikke 相关问题上有用，模型一般不会滥用；不需要客服功能可把 `cs_enabled` 关掉。
 
 ## 门槛模式（v0.3.0 新增，默认开启）
 
@@ -127,6 +161,10 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 | `listen_groups` | list | `[]` | 启用本插件的群号列表。配置了 `analyzer_config_path` 时仅作回退；两处都为空时插件不生效 |
 | `command_prefix` | string | `"/maa"` | analyzer 的指令前缀，用于拦截 AstrBot 对 `/maa` 指令的应答 |
 | `analysis_header_keywords` | list | `["日志分析结果"]` | analyzer 分析结果消息的特征词。引用消息含此特征且发送者是 Bot 自身时，判定为对分析结果的追问并拦截 |
+| `cs_enabled` | bool | `true` | MaaNikke 客服：监听群内的使用问题注入 README 知识回答，并提供源码读取工具 |
+| `cs_keywords` | list | 见配置文件 | 触发客服知识注入的关键词（子串匹配、不区分大小写）。留空 = 监听群所有消息都注入（费 token，不建议） |
+| `cs_repo_path` | string | `"/opt/maanikke-src"` | MaaNikke 源码仓库本地路径，供工具搜索/读取；需先 `git clone https://github.com/Shinarin/MaaNikke` 到该路径 |
+| `cs_readme_path` | string | `""` | 客服知识库文件路径；留空使用插件内置 `knowledge/maanikke_readme.md` |
 | `intent_keywords` | list | 见配置文件 | 纯文本意图关键词（如"分析日志""看下日志"）。命中且未附带文件时发送提醒，可按群习惯增删 |
 
 ## 行为规则
@@ -169,6 +207,9 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 **analyzer 侧如何确认 gate 已生效？**
 analyzer 启动日志里应有 `[门槛] 本地 API 已启动: http://127.0.0.1:8090`；`curl http://127.0.0.1:8090/health` 应返回 `{"ok": true}`。
 
+**问 MaaNikke 的问题没被客服回答？**
+检查三点：消息里是否含 `cs_keywords` 里的词（纯表情包/语音不触发）；AstrBot 日志里有没有 `[maaguard] 客服模式：已注入 MaaNikke README 知识`；知识库文件是否存在（`cs_readme_path` 或插件目录 `knowledge/maanikke_readme.md`）。源码工具查不到内容时，确认 `cs_repo_path` 已 clone 了 MaaNikke 仓库。
+
 **提醒的内容和 analyzer 的前缀对不上？**
 `analyzer_config_path` 未配置或读取失败（看 AstrBot 日志里的 `[maaguard]` 警告），此时用的是本地 `file_prefix`。
 
@@ -183,6 +224,7 @@ analyzer 启动日志里应有 `[门槛] 本地 API 已启动: http://127.0.0.1:
 
 ## 更新日志
 
+- **v0.4.0**：新增 MaaNikke 客服——命中关键词的群消息自动注入 README 知识（`knowledge/maanikke_readme.md`），并注册 `maanikke_source_search` / `maanikke_source_read` 两个 LLM 工具，复杂问题由模型调用工具查源码后回答
 - **v0.3.1**：门槛判定为 NO 但文件名带日志信号（log/日志/maa/debug/error/crash 等）时，发轻提示指导正确打包日志包，避免误判后"死寂"
 - **v0.3.0**：新增门槛模式（默认开启）——文件上传由模型判定意图后转发 analyzer 本地 gate API；模型异常/analyzer 拒绝自动回退旧规则；新增 `gate_enabled` / `gate_analyzer_url` / `gate_token` 配置
 - **v0.2.0**：新增 `analyzer_config_path` 自动同步；提醒按 (群, 文件名) 去重；增加 `[maaguard]` 决策日志
