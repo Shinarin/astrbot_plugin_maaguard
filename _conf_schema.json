@@ -54,8 +54,8 @@
   "cs_keywords": {
     "description": "触发客服知识注入的关键词（对群消息做子串匹配，不区分大小写）",
     "type": "list",
-    "default": ["maanikke", "nikke", "妮姬", "胜利女神", "每日任务", "自动化", "脚本", "maa"],
-    "hint": "留空表示监听群内所有消息都注入知识（费 token，不建议）"
+    "default": [],
+    "hint": "默认空列表 = 监听群内所有消息都注入知识（推荐，关键词筛选会漏掉描述不准的提问）。填了关键词则只对命中的消息注入，省 token"
   },
   "cs_repo_path": {
     "description": "MaaNikke 源码仓库本地路径（供 LLM 工具搜索/读取源码）",
