@@ -49,6 +49,12 @@ GATE_DOWN_REMINDER = (
     "看起来你想分析 MAA 日志，但分析工具暂时联系不上（{detail}），"
     "请稍后重试或联系管理员。"
 )
+# 门槛判定为 NO、但文件名像日志包时的轻提示（指导正确打包，语气比旧提醒轻）
+GATE_HINT = (
+    "如果这是想分析 MAA 日志：退出软件后，把安装目录里的 debug 文件夹"
+    "整个压成 1 个 zip 发上来即可——不用改名，也别用软件自带导出"
+    "（会拆成多个包），最好带一句「帮忙分析日志」。"
+)
 
 # 上传意图判定提示词：只要求输出 YES / NO，便于严格解析
 INTENT_JUDGE_PROMPT = """你在一个 QQ 群里，群里的机器人提供「MaaNikke 自动化脚本日志分析」服务：群友上传日志压缩包，机器人下载、提取报错并用 AI 分析原因。
@@ -85,6 +91,26 @@ def _normalize_prefixes(prefixes) -> tuple[str, ...]:
     if isinstance(prefixes, str):
         prefixes = (prefixes,)
     return tuple(p for p in prefixes if p)
+
+
+def looks_log_related(filename: str) -> bool:
+    """文件名是否有较强日志相关信号（用于门槛 NO 时的轻提示判断）。
+
+    比 classify_upload 的 near_miss 更严格：仅仅"是个压缩包"不算，
+    必须名字里带 log/日志/maa/debug/error/crash 或日志类后缀。
+    """
+    lower = (filename or "").strip().lower()
+    if not lower:
+        return False
+    return (
+        "log" in lower
+        or "日志" in lower
+        or "maa" in lower
+        or "debug" in lower
+        or "error" in lower
+        or "crash" in lower
+        or lower.endswith((".log", ".txt"))
+    )
 
 
 def classify_upload(filename: str, prefixes) -> str:
@@ -363,7 +389,13 @@ class MaaGuardPlugin(Star):
                     continue  # 与日志无关：静默
 
             if not decision:
-                logger.info(f"[maaguard] 门槛判定 NO: {name}，静默")
+                # 模型说 NO，但文件名有较强日志信号：可能是误判或打包方式
+                # 不对，发轻提示指导正确打包；其余文件依旧静默
+                if looks_log_related(name):
+                    logger.info(f"[maaguard] 门槛判定 NO 但疑似日志包: {name}，发轻提示")
+                    yield event.chain_result(self._at_chain(event, GATE_HINT))
+                else:
+                    logger.info(f"[maaguard] 门槛判定 NO: {name}，静默")
                 continue
 
             status, reason = await self._forward_to_analyzer(
