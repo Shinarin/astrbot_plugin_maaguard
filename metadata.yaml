@@ -1,6 +1,6 @@
 name: astrbot_plugin_maaguard
 desc: MAA 日志分析守门 + MaaNikke 客服插件。配合独立运行的 OnebotMaaLogAnalyzer：静默拦截会触发日志分析的消息；门槛模式下用模型判定上传意图再转发 analyzer；兼做 MaaNikke 使用客服（README 知识注入 + 源码读取工具）。
-version: v0.4.2
+version: v0.4.3
 author: Shinarin
 repo: https://github.com/Shinarin/astrbot_plugin_maaguard
 support_platforms:
