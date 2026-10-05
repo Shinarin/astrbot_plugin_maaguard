@@ -69,6 +69,23 @@
     "default": "",
     "hint": "留空使用插件内置 knowledge/maanikke_readme.md；想换内容可填自己的文件路径"
   },
+  "cs_faq_enabled": {
+    "description": "群聊沉淀：自动把群内确认的 MaaNikke 问题与解决方法记录进档案",
+    "type": "bool",
+    "default": true,
+    "hint": "回复后由模型严格判定是否值得入库（具体问题+明确解决才入库），回答问题时档案会与 README 一起注入"
+  },
+  "cs_issues_path": {
+    "description": "问题与解决档案的存放路径",
+    "type": "string",
+    "default": "",
+    "hint": "留空使用插件目录 knowledge/maanikke_issues.md；文件可手动编辑，保存即生效"
+  },
+  "cs_faq_max_entries": {
+    "description": "档案最多保留的条目数，超出后自动删掉最旧的",
+    "type": "int",
+    "default": 200
+  },
   "intent_keywords": {
     "description": "判断群友想分析日志的文本关键词（纯文本消息命中时发送提醒）",
     "type": "list",

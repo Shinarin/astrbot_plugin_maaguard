@@ -17,6 +17,7 @@ import json
 import os
 import re
 import time
+from difflib import SequenceMatcher
 
 import aiohttp
 import astrbot.api.message_components as Comp
@@ -26,6 +27,13 @@ from astrbot.api.star import Context, Star
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_README_PATH = os.path.join(PLUGIN_DIR, "knowledge", "maanikke_readme.md")
+DEFAULT_ISSUES_PATH = os.path.join(PLUGIN_DIR, "knowledge", "maanikke_issues.md")
+
+ISSUES_HEADER = """# MaaNikke 问题与解决档案（群聊沉淀）
+
+> 由 astrbot_plugin_maaguard 自动维护：监听群内确认的 MaaNikke 问题与解决方法会自动追加到这里；
+> 也可以手动补充/修改，保存后按 mtime 自动生效。最新条目在文件末尾。
+"""
 
 MATCH = "match"
 NEAR_MISS = "near_miss"
@@ -71,12 +79,33 @@ DEFAULT_CS_KEYWORDS: list = []
 
 CS_SYSTEM_PROMPT = """
 
-【MaaNikke 客服模式】群友可能在询问 MaaNikke（《胜利女神：NIKKE》每日任务自动化工具）的使用问题。请优先根据下面的 README 资料准确回答；资料没覆盖的复杂问题（节点行为、选项含义、源码逻辑、报错原因），请调用工具 maanikke_source_search（在源码仓库中搜索关键词）和 maanikke_source_read（读取仓库内指定文件）查证后再回答。回答要求：像群里的客服，口语化、先给结论再给步骤，不要整段照搬资料；如果群友的问题其实与 MaaNikke 无关，正常聊天即可，不要硬套资料。
+【MaaNikke 客服模式】群友可能在询问 MaaNikke（《胜利女神：NIKKE》每日任务自动化工具）的使用问题。请优先根据下面的 README 资料和《问题与解决档案》准确回答——档案里是群友真实遇到过的问题和确认有效的解决方法，新问题优先参考其中的既有结论；资料都没覆盖的复杂问题（节点行为、选项含义、源码逻辑、报错原因），请调用工具 maanikke_source_search（在源码仓库中搜索关键词）和 maanikke_source_read（读取仓库内指定文件）查证后再回答。回答要求：像群里的客服，口语化、先给结论再给步骤，不要整段照搬资料；如果群友的问题其实与 MaaNikke 无关，正常聊天即可，不要硬套资料。
 
 【无日志不猜】如果群友在问"这个怎么回事""为什么失败/卡住/报错"这类运行异常，但既没有上传日志包，消息里也没有足够的信息判断原因：不要编造原因或给笼统答案，请他把日志压缩包发到群里——把 MaaNikke 目录下的 debug 文件夹压成一个 zip 直接上传即可（不用改名），发上来后会自动分析并把结论发回群里；如果是 agent（Python 侧）的问题，则推荐打包 logs 文件夹。也可以先告诉他日志位置（logs/ 目录下的 log-*.log、maafw.log 和 vision/ 截图）。如果群友附了截图或具体描述，可以先基于可见信息做初步解答，但准确分析仍建议发日志包。
 
 【MaaNikke README 资料】
 {knowledge}"""
+
+# 从群聊问答中提取 FAQ 条目的判定提示词：要求严格，宁缺毋滥
+FAQ_EXTRACT_PROMPT = """你在整理 MaaNikke（《胜利女神：NIKKE》每日任务自动化工具）的用户问题档案。下面是 QQ 群里的一段问答：
+
+【群友提问】
+{question}
+
+【客服回答】
+{answer}
+
+判定这段问答是否值得入库，必须同时满足：
+1. 群友遇到的是 MaaNikke 使用中的具体问题、bug 或异常；
+2. 回答给出了明确的解决方法、结论或可操作的排查步骤。
+
+以下情况一律不入库：闲聊、与 MaaNikke 无关的话题、回答只是在追问信息（如"请发一下日志"）、没有形成结论的讨论、README 里已有的基础问题。
+
+值得入库时，严格按以下格式输出（不要输出其他任何内容）：
+### <一句话问题标题>
+- 解决：<解决方法，一两句话写清关键操作>
+
+不值得入库时，只输出：SKIP"""
 
 # 源码搜索时跳过的目录与二进制后缀
 _SKIP_DIRS = {".git", "runtimes", "libs", "node_modules", "__pycache__", ".vs", ".idea"}
@@ -230,24 +259,56 @@ class MaaGuardPlugin(Star):
         return str(self._cfg("cs_readme_path", "") or "").strip() \
             or DEFAULT_README_PATH
 
+    def _cs_issues_path(self) -> str:
+        return str(self._cfg("cs_issues_path", "") or "").strip() \
+            or DEFAULT_ISSUES_PATH
+
+    def _cs_faq_enabled(self) -> bool:
+        return bool(self._cfg("cs_faq_enabled", True))
+
+    def _cs_faq_max_entries(self) -> int:
+        try:
+            return max(1, int(self._cfg("cs_faq_max_entries", 200) or 200))
+        except (TypeError, ValueError):
+            return 200
+
     def _load_cs_knowledge(self) -> str:
-        """读取 README 知识库（按 mtime 缓存，读失败返回空串）。"""
-        path = self._cs_readme_path()
+        """读取 README 知识库 + 群聊沉淀的问题档案（按 mtime 缓存）。"""
+        readme_path = self._cs_readme_path()
+        issues_path = self._cs_issues_path()
         try:
-            mtime = os.path.getmtime(path)
+            readme_mtime = os.path.getmtime(readme_path)
         except OSError:
-            logger.warning(f"[maaguard] 客服知识库不存在: {path}")
+            logger.warning(f"[maaguard] 客服知识库不存在: {readme_path}")
             return ""
-        cached = getattr(self, "_cs_knowledge_cache", None)
-        if cached and cached[0] == path and cached[1] == mtime:
-            return cached[2]
         try:
-            with open(path, encoding="utf-8") as f:
+            issues_mtime = os.path.getmtime(issues_path)
+        except OSError:
+            issues_mtime = None
+        cached = getattr(self, "_cs_knowledge_cache", None)
+        if cached and cached[0] == readme_path and cached[1] == readme_mtime \
+                and cached[2] == issues_path and cached[3] == issues_mtime:
+            return cached[4]
+        try:
+            with open(readme_path, encoding="utf-8") as f:
                 text = f.read().strip()
         except OSError as exc:
             logger.warning(f"[maaguard] 客服知识库读取失败: {exc}")
             return ""
-        self._cs_knowledge_cache = (path, mtime, text)
+        if issues_mtime is not None:
+            try:
+                with open(issues_path, encoding="utf-8") as f:
+                    issues = f.read().strip()
+                # 去掉文件头说明，只留条目
+                body = issues.split("\n", 3)
+                issues_body = body[3] if len(body) >= 4 else ""
+                if issues_body.strip():
+                    text += ("\n\n【群友遇到的问题与解决档案（持续积累，越靠后越新）】\n"
+                             + issues_body.strip())
+            except OSError as exc:
+                logger.warning(f"[maaguard] 问题档案读取失败: {exc}")
+        self._cs_knowledge_cache = (readme_path, readme_mtime,
+                                    issues_path, issues_mtime, text)
         return text
 
     def _cs_keyword_hit(self, text: str) -> bool:
@@ -523,6 +584,108 @@ class MaaGuardPlugin(Star):
         req.system_prompt = (getattr(req, "system_prompt", "") or "") \
             + CS_SYSTEM_PROMPT.format(knowledge=knowledge)
         logger.info("[maaguard] 客服模式：已注入 MaaNikke README 知识")
+
+    # ── 群聊沉淀：问题与解决档案 ─────────────────────────
+
+    @staticmethod
+    def _parse_faq_extraction(text: str) -> str:
+        """解析提取模型的输出：合法条目返回文本，SKIP/不合规返回空串。"""
+        text = (text or "").strip()
+        if not text or text.upper().startswith("SKIP"):
+            return ""
+        if not text.startswith("### "):
+            return ""
+        keep = [l for l in text.splitlines()
+                if l.startswith("### ") or l.lstrip().startswith("- ")]
+        if len(keep) < 2:
+            return ""
+        return "\n".join(keep).strip()
+
+    @staticmethod
+    def _split_issues(content: str) -> list:
+        """把档案文件内容拆成条目列表（每个条目以 ### 标题 开始）。"""
+        entries, cur = [], []
+        for line in (content or "").splitlines():
+            if line.startswith("### "):
+                if cur:
+                    entries.append("\n".join(cur))
+                cur = [line]
+            elif cur:
+                cur.append(line)
+        if cur:
+            entries.append("\n".join(cur))
+        return entries
+
+    def _append_issue(self, entry: str) -> bool:
+        """去重后追加条目；返回是否真正追加（False = 已有相似条目）。"""
+        path = self._cs_issues_path()
+        header = ISSUES_HEADER
+        entries: list = []
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    entries = self._split_issues(f.read())
+            except OSError as exc:
+                logger.warning(f"[maaguard] 问题档案读取失败: {exc}")
+        compact = "".join(entry.split())
+        for old in entries:
+            if SequenceMatcher(None, compact, "".join(old.split())).ratio() > 0.75:
+                return False
+        title = entry.splitlines()[0].lstrip("# ").strip()
+        today = time.strftime("%Y-%m-%d")
+        entries.append(f"### {today} {title}\n" + "\n".join(entry.splitlines()[1:]))
+        max_entries = self._cs_faq_max_entries()
+        if len(entries) > max_entries:
+            entries = entries[-max_entries:]
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(header + "\n".join(entries) + "\n")
+        except OSError as exc:
+            logger.warning(f"[maaguard] 问题档案写入失败: {exc}")
+            return False
+        return True
+
+    async def _record_faq(self, question: str, answer: str) -> None:
+        """调用模型判定这段问答是否值得入库，是则追加到档案。"""
+        try:
+            provider = await self.context.get_using_provider_async()
+            if provider is None:
+                return
+            prompt = FAQ_EXTRACT_PROMPT.format(
+                question=question[:2000], answer=answer[:3000])
+            resp = await asyncio.wait_for(provider.text_chat(prompt=prompt),
+                                          timeout=60)
+            text = (getattr(resp, "completion_text", "") or "").strip()
+        except Exception as exc:
+            logger.warning(f"[maaguard] FAQ 提取失败: {exc}")
+            return
+        entry = self._parse_faq_extraction(text)
+        if not entry:
+            return
+        if self._append_issue(entry):
+            logger.info(f"[maaguard] FAQ 档案新增: {entry.splitlines()[0]}")
+        else:
+            logger.info("[maaguard] FAQ 档案已有相似条目，跳过")
+
+    @filter.on_llm_response()
+    async def cs_record_faq(self, event: AstrMessageEvent, response) -> None:
+        """监听群内机器人的回复，把确认有效的问题与解决异步沉淀进档案。"""
+        if not self._cs_enabled() or not self._cs_faq_enabled() \
+                or event is None or response is None:
+            return
+        try:
+            group_id = event.get_group_id()
+        except Exception:
+            return
+        groups = self._listen_groups()
+        if not groups or group_id is None or str(group_id) not in groups:
+            return
+        question = (getattr(event, "message_str", "") or "").strip()
+        answer = (getattr(response, "completion_text", "") or "").strip()
+        if len(question) < 6 or not answer:
+            return
+        asyncio.create_task(self._record_faq(question, answer))
 
     # ── 源码工具（供 AstrBot 的 LLM 工具循环/agent 调用） ──
 

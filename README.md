@@ -48,9 +48,18 @@ OnebotMaaLogAnalyzer 是一个独立运行的 OneBot v11 Bot（不依赖任何 B
 - **不干扰正常聊天**：注入提示里明确要求模型"与 MaaNikke 无关的问题正常聊天即可，不要硬套资料"
 - **不需要额外配置 API**：复用 AstrBot 已配置的对话模型与工具调用（function calling）能力
 - **README 可更新**：替换插件目录下 `knowledge/maanikke_readme.md`，或配置 `cs_readme_path` 指向自己的文件（按 mtime 自动刷新缓存）
+- **问题档案自动沉淀**：群里确认的 MaaNikke 新 bug 和解决方法，会自动追加到 `knowledge/maanikke_issues.md`（详见下文），回答时与 README 一起加载——积累越多，答得越准
 - **源码仓库需要先部署**：`git clone https://github.com/Shinarin/MaaNikke /opt/maanikke-src`（默认路径，可用 `cs_repo_path` 修改）；更新源码在该目录 `git pull`。仓库缺失时工具会返回提示，不影响 README 问答
 
 不需要客服功能可把 `cs_enabled` 关掉。
+
+### 问题与解决档案（FAQ 沉淀）
+
+群里每出现一次"群友提问题 → 机器人给出解决方法"的完整问答，插件会异步调用模型做一次严格判定：**必须是 MaaNikke 的具体问题、且回答有明确解决方法/结论**才入库；闲聊、追问信息、README 已有的基础问题一律跳过。入库时自动去重（与已有条目高度相似则忽略），超过上限（默认 200 条）自动删掉最旧的。
+
+- 存放位置：`knowledge/maanikke_issues.md`（可用 `cs_issues_path` 修改），格式为 `### 日期 标题` + `- 解决：…`，**可以直接手动编辑补充**
+- 加载时机：每次注入客服知识时，档案内容会拼在 README 资料后面，提示词中明确要求模型优先参考既有结论
+- 关闭沉淀：`cs_faq_enabled` 设为 `false`（档案仍会被加载，适合只用手动维护的场景）
 
 ## 门槛模式（v0.3.0 新增，默认开启）
 
@@ -164,6 +173,9 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 | `cs_keywords` | list | `[]`（不筛选） | 触发客服知识注入的关键词（子串匹配、不区分大小写）。默认空列表 = 监听群内所有消息都注入（推荐）；填了关键词则只对命中的消息注入，省 token |
 | `cs_repo_path` | string | `"/opt/maanikke-src"` | MaaNikke 源码仓库本地路径，供工具搜索/读取；需先 `git clone https://github.com/Shinarin/MaaNikke` 到该路径 |
 | `cs_readme_path` | string | `""` | 客服知识库文件路径；留空使用插件内置 `knowledge/maanikke_readme.md` |
+| `cs_faq_enabled` | bool | `true` | 群聊沉淀：自动把群内确认的 MaaNikke 问题与解决方法记录进档案 |
+| `cs_issues_path` | string | `""` | 问题与解决档案路径；留空使用插件目录 `knowledge/maanikke_issues.md`，可手动编辑 |
+| `cs_faq_max_entries` | int | `200` | 档案最多保留的条目数，超出后自动删掉最旧的 |
 | `intent_keywords` | list | 见配置文件 | 纯文本意图关键词（如"分析日志""看下日志"）。命中且未附带文件时发送提醒，可按群习惯增删 |
 
 ## 行为规则
@@ -223,6 +235,7 @@ analyzer 启动日志里应有 `[门槛] 本地 API 已启动: http://127.0.0.1:
 
 ## 更新日志
 
+- **v0.5.0**：新增问题与解决档案——群内确认的 MaaNikke 新 bug 与解决方法由模型严格判定后自动沉淀到 `knowledge/maanikke_issues.md`（去重、限量裁剪、可手动编辑），回答问题时与 README 一起注入，越积累越精准
 - **v0.4.3**：引导文案明确打包位置——常规问题压 MaaNikke 目录下的 `debug` 文件夹；agent（Python 侧）问题推荐压 `logs` 文件夹。同步更新门槛轻提示与客服"无日志不猜"条款
 - **v0.4.2**：客服提示新增"无日志不猜"规则——群友只问"这个怎么回事"这类无日志、信息不足的异常问题时，引导他直接把日志 zip 发到群里（自动接上门槛→analyzer 分析），不编造原因
 - **v0.4.1**：客服知识注入默认不再做关键词筛选（监听群内全部消息注入），避免"为什么卡住"这类描述不准的提问漏答；`cs_keywords` 改为可选的省 token 开关
