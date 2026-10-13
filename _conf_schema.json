@@ -86,6 +86,12 @@
     "type": "int",
     "default": 200
   },
+  "analyze_tool_enabled": {
+    "description": "自然语言日志分析工具 maa_analyze_log（模型可在对话中直接调用分析群文件里的日志包）",
+    "type": "bool",
+    "default": true,
+    "hint": "需要 analyzer 开启 gate（与 gate_token 同一套配置）"
+  },
   "intent_keywords": {
     "description": "判断群友想分析日志的文本关键词（纯文本消息命中时发送提醒）",
     "type": "list",

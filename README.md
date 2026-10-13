@@ -50,6 +50,7 @@ OnebotMaaLogAnalyzer 是一个独立运行的 OneBot v11 Bot（不依赖任何 B
 - **README 可更新**：替换插件目录下 `knowledge/maanikke_readme.md`，或配置 `cs_readme_path` 指向自己的文件（按 mtime 自动刷新缓存）
 - **问题档案自动沉淀**：群里确认的 MaaNikke 新 bug 和解决方法，会自动追加到 `knowledge/maanikke_issues.md`（详见下文），回答时与 README 一起加载——积累越多，答得越准
 - **源码仓库需要先部署**：`git clone https://github.com/Shinarin/MaaNikke /opt/maanikke-src`（默认路径，可用 `cs_repo_path` 修改）；更新源码在该目录 `git pull`。仓库缺失时工具会返回提示，不影响 README 问答
+- **自然语言直接分析日志**：群友说"帮我分析刚才那个 debug.zip""分析群文件里最新的日志包"时，模型会调用 `maa_analyze_log` 工具直接提交分析（含门槛误判后的补救重试），结果照长发回群里，不必重新上传
 
 不需要客服功能可把 `cs_enabled` 关掉。
 
@@ -176,6 +177,7 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 | `cs_faq_enabled` | bool | `true` | 群聊沉淀：自动把群内确认的 MaaNikke 问题与解决方法记录进档案 |
 | `cs_issues_path` | string | `""` | 问题与解决档案路径；留空使用插件目录 `knowledge/maanikke_issues.md`，可手动编辑 |
 | `cs_faq_max_entries` | int | `200` | 档案最多保留的条目数，超出后自动删掉最旧的 |
+| `analyze_tool_enabled` | bool | `true` | 自然语言日志分析工具 `maa_analyze_log`（模型可在对话中直接调用，分析群文件里的日志包；需 analyzer 开启 gate） |
 | `intent_keywords` | list | 见配置文件 | 纯文本意图关键词（如"分析日志""看下日志"）。命中且未附带文件时发送提醒，可按群习惯增删 |
 
 ## 行为规则
@@ -235,6 +237,7 @@ analyzer 启动日志里应有 `[门槛] 本地 API 已启动: http://127.0.0.1:
 
 ## 更新日志
 
+- **v0.6.0**：新增 `maa_analyze_log` 工具——群友用自然语言点名分析已上传/群文件里的日志包（"分析刚才那个 debug.zip""分析最新的日志包"），模型直接调用工具提交分析，结果发回群里；analyzer gate API 相应新增 `GET /files` 与 `/analyze` 的 `force` 参数（门槛误判后的补救）。顺带纳入 file 消息入口补传下载 url 的改动
 - **v0.5.0**：新增问题与解决档案——群内确认的 MaaNikke 新 bug 与解决方法由模型严格判定后自动沉淀到 `knowledge/maanikke_issues.md`（去重、限量裁剪、可手动编辑），回答问题时与 README 一起注入，越积累越精准
 - **v0.4.3**：引导文案明确打包位置——常规问题压 MaaNikke 目录下的 `debug` 文件夹；agent（Python 侧）问题推荐压 `logs` 文件夹。同步更新门槛轻提示与客服"无日志不猜"条款
 - **v0.4.2**：客服提示新增"无日志不猜"规则——群友只问"这个怎么回事"这类无日志、信息不足的异常问题时，引导他直接把日志 zip 发到群里（自动接上门槛→analyzer 分析），不编造原因

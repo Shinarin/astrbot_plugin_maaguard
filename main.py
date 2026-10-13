@@ -83,6 +83,8 @@ CS_SYSTEM_PROMPT = """
 
 【无日志不猜】如果群友在问"这个怎么回事""为什么失败/卡住/报错"这类运行异常，但既没有上传日志包，消息里也没有足够的信息判断原因：不要编造原因或给笼统答案，请他把日志压缩包发到群里——把 MaaNikke 目录下的 debug 文件夹压成一个 zip 直接上传即可（不用改名），发上来后会自动分析并把结论发回群里；如果是 agent（Python 侧）的问题，则推荐打包 logs 文件夹。也可以先告诉他日志位置（logs/ 目录下的 log-*.log、maafw.log 和 vision/ 截图）。如果群友附了截图或具体描述，可以先基于可见信息做初步解答，但准确分析仍建议发日志包。
 
+【日志分析工具】如果群友要求分析一个已经存在的日志文件（刚才上传过的、或群文件里的，比如"帮我分析刚才那个 debug.zip""分析群文件里最新的日志包"），调用工具 maa_analyze_log（file_name 传文件名，不确定就留空让它自动选最新的日志包），不要让他重复上传已有的文件。调用成功后告诉群友"分析已开始，结果稍候发群里"。
+
 【MaaNikke README 资料】
 {knowledge}"""
 
@@ -485,6 +487,7 @@ class MaaGuardPlugin(Star):
             "group_id": group_id,
             "file_name": str(meta.get("name") or ""),
             "file_id": str(meta.get("file_id") or ""),
+            "url": str(meta.get("url") or ""),
             "size": int(meta.get("size") or 0),
             "uploader": str(event.get_sender_id() or ""),
         }
@@ -519,8 +522,11 @@ class MaaGuardPlugin(Star):
             name = str(meta.get("name") or "")
             if not name:
                 continue
-            # notice 与 file 双入口去重：第二个入口直接静默
-            if self._reminder_recently_sent(("gate", group_id, name)):
+            # notice 与 file 双入口去重：第二个入口若补充了下载 url 则补传 analyzer，其余静默
+            has_seen = self._reminder_recently_sent(("gate", group_id, name))
+            if has_seen:
+                if meta.get("url"):
+                    await self._forward_to_analyzer(meta, group_id, event)
                 continue
 
             decision = await self._judge_upload_intent(event, meta, message_str)
@@ -783,6 +789,144 @@ class MaaGuardPlugin(Star):
         """读取 MaaNikke 源码仓库内的文件内容。path 为仓库内相对路径
         （如 resource/base/pipeline/xxx.json）。仅用于 MaaNikke 相关问题。"""
         return self._repo_read(path, max_chars)
+
+    # ── 日志分析工具（自然语言直接调用 analyzer） ──────────
+
+    @staticmethod
+    def _pick_group_file(candidates: list, file_name: str) -> dict | None:
+        """从群文件列表中挑选要分析的文件：空名称优先取带强日志信号
+        （log/日志/debug/error/crash）的最新文件，其次最新的压缩包；
+        有名称则子串匹配取最新命中。candidates 需已按 modify_time 倒序。"""
+        if not candidates:
+            return None
+        name = (file_name or "").strip().lower()
+        if not name:
+            strong = ("log", "日志", "debug", "error", "crash")
+            for item in candidates:
+                fn = item.get("file_name", "").lower()
+                if any(k in fn for k in strong):
+                    return item
+            for item in candidates:
+                if item.get("file_name", "").lower().endswith(".zip"):
+                    return item
+            return candidates[0]
+        for item in candidates:
+            if name in item.get("file_name", "").lower():
+                return item
+        return None
+
+    def _analyze_enabled(self) -> bool:
+        return bool(self._cfg("analyze_tool_enabled", True))
+
+    async def _gate_get_files(self, group_id: str,
+                              keyword: str = "") -> tuple[list, str]:
+        """调用 analyzer gate API 列群文件。返回 (files, error)。"""
+        url = self._gate_analyzer_url().rstrip("/") + "/files"
+        params = {"group_id": group_id}
+        if keyword:
+            params["keyword"] = keyword
+        headers = {}
+        token = self._gate_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.get(url, params=params,
+                                    headers=headers) as resp:
+                    data = {}
+                    try:
+                        data = await resp.json(content_type=None)
+                    except Exception:
+                        pass
+                    if resp.status == 200 and isinstance(data, dict):
+                        return list(data.get("files") or []), ""
+                    reason = str((data or {}).get("reason") or f"HTTP {resp.status}")
+                    return [], reason
+        except Exception as exc:
+            return [], str(exc)[:120]
+
+    async def _gate_submit(self, group_id: str, meta: dict,
+                           sender: str) -> tuple[str, str]:
+        """调用 analyzer gate API 提交分析（force 跳过去重窗口）。"""
+        url = self._gate_analyzer_url().rstrip("/") + "/analyze"
+        payload = {
+            "group_id": group_id,
+            "file_name": str(meta.get("file_name") or ""),
+            "file_id": str(meta.get("file_id") or ""),
+            "size": int(meta.get("size") or 0),
+            "uploader": sender,
+            "force": True,
+        }
+        headers = {}
+        token = self._gate_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.post(url, json=payload,
+                                     headers=headers) as resp:
+                    data = {}
+                    try:
+                        data = await resp.json(content_type=None)
+                    except Exception:
+                        pass
+                    status = str((data or {}).get("status") or "")
+                    reason = str((data or {}).get("reason") or "")
+                    if resp.status in (200, 202) and status in ("ok", "duplicate"):
+                        return status, reason
+                    if status == "rejected":
+                        return "rejected", reason or "分析工具拒绝了该文件"
+                    return "error", f"HTTP {resp.status}"
+        except Exception as exc:
+            return "error", str(exc)[:120]
+
+    @filter.llm_tool(name="maa_analyze_log")
+    async def maa_analyze_log(self, event: AstrMessageEvent,
+                              file_name: str = "",
+                              reason: str = "") -> str:
+        """分析群里的 Maa 日志压缩包。file_name 为群文件名（可省略，省略时
+        自动选群内最新的日志包）；分析结果会直接发到群里。仅用于监听群内
+        的日志分析请求。"""
+        if not self._analyze_enabled():
+            return "日志分析工具未启用。"
+        try:
+            group_id = event.get_group_id()
+        except Exception:
+            group_id = None
+        groups = self._listen_groups()
+        if group_id is None:
+            return "请先在群里上传日志包，或在群里直接说你要分析哪个文件。"
+        if not groups or str(group_id) not in groups:
+            return "该群未开通日志分析，请联系管理员。"
+
+        group_id = str(group_id)
+        sender = str(event.get_sender_id() or "")
+
+        # 有文件名时先按关键词查一次，没命中再拉全量列表
+        files, err = await self._gate_get_files(group_id, file_name or "")
+        if err and err != "该群未在监听配置中":
+            return f"分析工具暂时联系不上（{err}），请稍后重试。"
+        if err == "该群未在监听配置中":
+            return "该群未开通日志分析，请联系管理员。"
+
+        meta = self._pick_group_file(files, file_name)
+        if meta is None:
+            hint = (f"群文件里没有找到名为 {file_name!r} 的文件。"
+                    "可以让群友直接上传日志 zip，会自动分析。")
+            return hint
+
+        status, reason = await self._gate_submit(group_id, meta, sender)
+        if status == "ok":
+            return (f"已开始分析 {meta['file_name']}，"
+                    "分析结果稍后会直接发到群里，请稍等。")
+        if status == "duplicate":
+            return (f"{meta['file_name']} 已在分析队列或刚分析过，"
+                    "结果会直接发到群里。")
+        if status == "rejected":
+            return f"分析工具处理不了 {meta['file_name']}：{reason}"
+        return f"分析工具暂时联系不上（{reason}），请稍后重试。"
 
     def _is_analysis_quote(self, event: AstrMessageEvent, replies: list) -> bool:
         """被引消息是否为本 Bot 发出的分析结果（analyzer 会接管这类追问）。"""
