@@ -244,6 +244,27 @@ class MaaGuardPlugin(Star):
     def _gate_token(self) -> str:
         return str(self._cfg("gate_token", "") or "").strip()
 
+    def _skip_file_keywords(self) -> list[str]:
+        keywords = self._cfg("skip_file_keywords", []) or []
+        return [str(k).lower() for k in keywords if str(k).strip()]
+
+    def _skip_uploader_ids(self) -> set[str]:
+        ids = self._cfg("skip_uploader_ids", []) or []
+        return {str(i).strip() for i in ids if str(i).strip()}
+
+    def _should_skip_upload(self, meta: dict, event: AstrMessageEvent) -> bool:
+        """免分析名单：命中即完全静默——不调模型判定、不转发 analyzer、不发提醒。"""
+        name = str(meta.get("name") or "").lower()
+        if name and any(k in name for k in self._skip_file_keywords()):
+            return True
+        try:
+            sender = str(event.get_sender_id() or "").strip()
+        except Exception:
+            sender = ""
+        if sender and sender in self._skip_uploader_ids():
+            return True
+        return False
+
     # ── MaaNikke 客服 ────────────────────────────────────
 
     def _cs_enabled(self) -> bool:
@@ -521,6 +542,10 @@ class MaaGuardPlugin(Star):
         for meta in uploads:
             name = str(meta.get("name") or "")
             if not name:
+                continue
+            # 免分析名单（文件名关键词 / 上传者 QQ）：确定性跳过，连模型判定都不调用
+            if self._should_skip_upload(meta, event):
+                logger.info(f"[maaguard] 免分析名单命中: {name}，静默跳过")
                 continue
             # notice 与 file 双入口去重：第二个入口若补充了下载 url 则补传 analyzer，其余静默
             has_seen = self._reminder_recently_sent(("gate", group_id, name))

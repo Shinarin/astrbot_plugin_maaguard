@@ -166,6 +166,8 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 | `gate_enabled` | bool | `true` | 门槛模式：文件上传先由模型判定意图再转发 analyzer。需要 analyzer 开启 gate 并正确填写下面两项 |
 | `gate_analyzer_url` | string | `"http://127.0.0.1:8090"` | analyzer 本地 gate API 地址（仅监听 127.0.0.1） |
 | `gate_token` | string | `""` | analyzer gate API 的鉴权 token，需与 analyzer `config.json` 里 `gate.token` 一致 |
+| `skip_file_keywords` | list | `[]` | 免分析名单：文件名含这些关键词（不区分大小写）的上传直接跳过——不分析、不提醒、连模型判定都不调用。适合明确不是日志的压缩包，如 `["photo", "资源包"]` |
+| `skip_uploader_ids` | list | `[]` | 免分析名单：这些 QQ 号上传的任何文件都跳过日志分析（如管理员自己传文件） |
 | `file_prefix` | string | `"MaaXXX-logs"` | 日志包文件名前缀。配置了 `analyzer_config_path` 时仅作回退 |
 | `listen_groups` | list | `[]` | 启用本插件的群号列表。配置了 `analyzer_config_path` 时仅作回退；两处都为空时插件不生效 |
 | `command_prefix` | string | `"/maa"` | analyzer 的指令前缀，用于拦截 AstrBot 对 `/maa` 指令的应答 |
@@ -189,6 +191,7 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 | 上传文件（模型判定想分析日志，analyzer 受理） | 静默拦截（analyzer 会分析并回复） |
 | 上传文件（模型判定想分析日志，analyzer 拒绝，如超 100MB） | @当事人说明拒绝原因 + 拦截 |
 | 上传文件（模型判定与日志无关） | 静默拦截 |
+| 上传文件（命中免分析名单的关键词或上传者） | 静默拦截：不分析、不提醒、不调用模型判定 |
 | 上传文件（模型判定无关，但文件名有日志信号，如 `xxxlog.zip`） | @当事人发轻提示（指导正确打包日志包）+ 拦截 |
 | 上传文件（模型不可用，回退旧规则） | 命中前缀 → 照样转发 analyzer；疑似日志包 → @当事人发送提醒；无关文件 → 静默拦截 |
 | 分析工具联系不上 | @当事人提示稍后重试 + 拦截 |
@@ -237,6 +240,7 @@ analyzer 启动日志里应有 `[门槛] 本地 API 已启动: http://127.0.0.1:
 
 ## 更新日志
 
+- **v0.6.1**：新增免分析名单——`skip_file_keywords`（文件名关键词）与 `skip_uploader_ids`（上传者 QQ）任一命中，上传直接静默跳过：不分析、不提醒、连模型门槛判定都不调用，适合明确不是日志的压缩包或管理员自己传文件
 - **v0.6.0**：新增 `maa_analyze_log` 工具——群友用自然语言点名分析已上传/群文件里的日志包（"分析刚才那个 debug.zip""分析最新的日志包"），模型直接调用工具提交分析，结果发回群里；analyzer gate API 相应新增 `GET /files` 与 `/analyze` 的 `force` 参数（门槛误判后的补救）。顺带纳入 file 消息入口补传下载 url 的改动
 - **v0.5.0**：新增问题与解决档案——群内确认的 MaaNikke 新 bug 与解决方法由模型严格判定后自动沉淀到 `knowledge/maanikke_issues.md`（去重、限量裁剪、可手动编辑），回答问题时与 README 一起注入，越积累越精准
 - **v0.4.3**：引导文案明确打包位置——常规问题压 MaaNikke 目录下的 `debug` 文件夹；agent（Python 侧）问题推荐压 `logs` 文件夹。同步更新门槛轻提示与客服"无日志不猜"条款

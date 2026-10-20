@@ -46,6 +46,18 @@
     "default": "",
     "hint": "与 analyzer config.json 里 gate.token 一致；analyzer 未设置 token 时留空"
   },
+  "skip_file_keywords": {
+    "description": "免分析名单：文件名含这些关键词（不区分大小写）的上传完全跳过日志分析",
+    "type": "list",
+    "default": [],
+    "hint": "命中后连模型门槛判定都不会调用：不分析、不提醒、完全静默。适合明确不是日志的压缩包，例如 [\"photo\", \"资源包\", \"立绘\"]"
+  },
+  "skip_uploader_ids": {
+    "description": "免分析名单：这些 QQ 号上传的任何文件都跳过日志分析",
+    "type": "list",
+    "default": [],
+    "hint": "例如管理员自己往群里传文件不想触发分析，就填自己的 QQ 号"
+  },
   "cs_enabled": {
     "description": "MaaNikke 客服：在监听群内回答使用问题，README 知识注入 + 源码读取工具",
     "type": "bool",
