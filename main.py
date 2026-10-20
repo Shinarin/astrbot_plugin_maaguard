@@ -42,8 +42,8 @@ IGNORE = "ignore"
 # 同一 (群, 文件名) 的去重窗口： notice 与 file 消息会先后到达
 REMINDER_DEDUP_SECONDS = 120
 
-# 除 .zip 外常见的压缩包后缀，命中即视为"可能是日志包但格式不对"
-ARCHIVE_EXTENSIONS = (".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".bz2")
+# 支持的压缩包后缀（analyzer 会把 7z/rar/tar/gz/xz 转成 zip 再分析）
+ARCHIVE_EXTENSIONS = (".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".bz2", ".xz")
 
 REMINDER = (
     "看起来你想分析 MAA 日志，但这样触发不了。正确做法：\n"
@@ -62,12 +62,12 @@ GATE_DOWN_REMINDER = (
     "看起来你想分析 MAA 日志，但分析工具暂时联系不上（{detail}），"
     "请稍后重试或联系管理员。"
 )
-# 门槛模式下：文件名像日志包但格式不对（7z/rar 等）时的轻提示（指导正确打包）
+# 门槛模式下：文件名像日志、但连压缩包都不是（如裸 .log/.txt 文件）时的轻提示
 GATE_HINT = (
     "如果这是想分析 MAA 日志：把 MaaNikke 目录下的 debug 文件夹整个压成 1 个 "
-    "zip 发上来即可——不用改名，也别用软件自带导出（会拆成多个包）；"
-    "如果是 agent（Python 侧）的问题，改压 logs 文件夹。"
-    "最好带一句「帮忙分析日志」。"
+    "压缩包（zip/7z/rar 都行）直接发上来即可，我会自动分析——不用改名，"
+    "也别用软件自带导出（会拆成多个包）；如果是 agent（Python 侧）的问题，"
+    "改压 logs 文件夹。"
 )
 
 # ── MaaNikke 客服 ─────────────────────────────────────
@@ -498,9 +498,9 @@ class MaaGuardPlugin(Star):
                 logger.info(f"[maaguard] 门槛判定无关: {name}，静默")
                 continue
 
-            if not name.lower().endswith(".zip"):
-                # 像日志包但格式不对（7z/rar 等）：发轻提示指导正确打包
-                logger.info(f"[maaguard] 疑似日志包但非 zip: {name}，发轻提示")
+            if not name.lower().endswith(ARCHIVE_EXTENSIONS):
+                # 像日志但连压缩包都不是（裸 .log/.txt 文件等）：发轻提示指导正确打包
+                logger.info(f"[maaguard] 疑似日志但非压缩包: {name}，发轻提示")
                 yield event.chain_result(self._at_chain(event, GATE_HINT))
                 continue
 

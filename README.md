@@ -14,7 +14,7 @@ OnebotMaaLogAnalyzer 是一个独立运行的 OneBot v11 Bot（不依赖任何 B
 本插件的职责：
 
 1. **该 analyzer 说话的场景，让 AstrBot 闭嘴**（静默拦截，零回复）
-2. **门槛模式（默认）**：群友上传的文件，只有文件名带 debug/log/日志 等日志信号才转发给 analyzer 下载分析；其余上传静默放行。analyzer 下载后还会校验包内内容——确实没有日志文件时会在群里询问是不是要重传
+2. **门槛模式（默认）**：群友上传的文件，只有文件名带 debug/log/日志 等日志信号才转发给 analyzer 下载分析（zip/7z/rar/tar.gz 等格式都行，analyzer 自动转换）；其余上传静默放行。analyzer 下载后还会校验包内内容——确实没有日志文件时会在群里询问是不是要重传
 3. **群友操作不对时，主动指路**（@当事人 + 正确做法提醒）
 4. **MaaNikke 客服**：回答 MaaNikke 使用问题——README 知识注入 + 复杂问题调用源码读取工具（AstrBot 的 LLM 工具循环）查证后回答
 
@@ -72,10 +72,10 @@ OnebotMaaLogAnalyzer 是一个独立运行的 OneBot v11 Bot（不依赖任何 B
         ▼
  本插件：文件名含 debug / log / 日志 / maa / error / crash 等信号？
         │                                       │
-       是│.zip                                 否│
+       是│压缩包（zip/7z/rar/tar.gz…）         否│
         ▼                                       ▼
  POST analyzer 本地 gate API                 静默放行
- （下载 → 摘要 → 校验包内内容）              （AstrBot 也不搭话）
+ （下载 → 转 zip → 摘要 → 校验包内内容）      （AstrBot 也不搭话）
         │
         ▼
  包内有 .log / 配置 / 错误截图？
@@ -87,8 +87,8 @@ OnebotMaaLogAnalyzer 是一个独立运行的 OneBot v11 Bot（不依赖任何 B
 ```
 
 - 判定完全确定性：**不调模型、零 token 消耗、不会误判**
-- 文件名像日志包但不是 .zip（如 7z/rar）时，@当事人发轻提示指导正确打包
-- analyzer 下载后的第二道校验兜底"文件名有信号但内容不是日志"（如改名伪装、传错文件），不是日志会在群里询问，不浪费 AI 调用
+- 支持 **zip / 7z / rar / tar / tar.gz(tgz) / tar.bz2 / tar.xz** 等格式：analyzer 下载后自动解包转成标准 zip 再分析，群友压成什么格式都行；不是压缩包的裸 .log/.txt 文件会 @当事人指导正确打包
+- analyzer 下载后的内容校验兜底"文件名有信号但内容不是日志"（如改名伪装、传错文件），不是日志会在群里询问，不浪费 AI 调用
 - analyzer 侧需要开启 gate（见下），开启后 analyzer 不再按文件名前缀自动触发，只接受本插件转发来的任务（及 `maa_analyze_log` 工具的点名分析）
 - 免分析名单（`skip_file_keywords` / `skip_uploader_ids`）在判定最前面命中即完全静默
 
@@ -125,10 +125,10 @@ analyzer 的 `config.json` 增加一段（开启后其自动触发只保留 `/ma
 
 | 场景 | OnebotMaaLogAnalyzer | 本插件（AstrBot 侧） |
 |---|---|---|
-| 上传文件（文件名带日志信号的 .zip） | 接收转发、下载、校验内容、分析、回复结论 | 文件名判定 + 转发 + 静默拦截 AstrBot |
+| 上传文件（文件名带日志信号的压缩包） | 接收转发、下载、转 zip、校验内容、分析、回复结论 | 文件名判定 + 转发 + 静默拦截 AstrBot |
 | 上传文件（文件名无日志信号） | 不处理 | 静默拦截 AstrBot |
 | 下载后发现包内没有日志/配置/错误截图 | 回群询问是不是要重传、还是其他文件 | （已静默） |
-| 文件名像日志包但不是 .zip（7z/rar 等） | 不处理 | @当事人发轻提示指导正确打包 |
+| 文件名像日志但不是压缩包（裸 .log/.txt） | 不处理 | @当事人发轻提示指导正确打包 |
 | `/maa` 系列指令 | 应答 | 静默拦截 AstrBot |
 | 引用分析结果追问 | 基于日志继续答疑 | 静默拦截 AstrBot |
 | 嘴上说要分析日志但没传文件 | 不处理 | 发送提醒 |
@@ -172,7 +172,7 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `analyzer_config_path` | string | `""` | analyzer 的 `config.json` 路径。**填写后监听群与前缀以 analyzer 为准**，读取失败自动回退下方本地配置；留空则完全使用本地配置 |
-| `gate_enabled` | bool | `true` | 门槛模式：文件名含 debug/log/日志/maa/error/crash 等信号的 .zip 才转发 analyzer 下载分析（确定性判定，不调用模型）；analyzer 下载后校验包内内容，不是日志会回群询问是否重传。需要 analyzer 开启 gate 并正确填写下面两项 |
+| `gate_enabled` | bool | `true` | 门槛模式：文件名含 debug/log/日志/maa/error/crash 等信号的压缩包（zip/7z/rar/tar.gz…）才转发 analyzer 下载分析（确定性判定，不调用模型）；analyzer 下载后转换格式并校验包内内容，不是日志会回群询问是否重传。需要 analyzer 开启 gate 并正确填写下面两项 |
 | `gate_analyzer_url` | string | `"http://127.0.0.1:8090"` | analyzer 本地 gate API 地址（仅监听 127.0.0.1） |
 | `gate_token` | string | `""` | analyzer gate API 的鉴权 token，需与 analyzer `config.json` 里 `gate.token` 一致 |
 | `skip_file_keywords` | list | `[]` | 免分析名单：文件名含这些关键词（不区分大小写）的上传直接跳过——不分析、不提醒、连模型判定都不调用。适合明确不是日志的压缩包，如 `["photo", "资源包"]` |
@@ -197,12 +197,12 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 
 | 场景 | 行为 |
 |---|---|
-| 上传文件（文件名带日志信号的 .zip） | 转发 analyzer + 静默拦截（analyzer 下载、校验内容、分析并回复） |
+| 上传文件（文件名带日志信号的压缩包，zip/7z/rar/tar.gz 等） | 转发 analyzer + 静默拦截（analyzer 转换格式、校验内容、分析并回复） |
 | 上传文件（analyzer 受理后拒绝，如超 100MB） | @当事人说明拒绝原因 + 拦截 |
 | 上传文件（analyzer 下载后发现包内无日志/配置/错误截图） | analyzer 回群询问是否重传（插件保持静默） |
 | 上传文件（文件名无日志信号） | 静默拦截 |
 | 上传文件（命中免分析名单的关键词或上传者） | 静默拦截：不分析、不提醒 |
-| 上传文件（文件名像日志包但不是 .zip，如 `logs.7z`） | @当事人发轻提示（指导正确打包日志包）+ 拦截 |
+| 上传文件（像日志但不是压缩包，如裸 `asst.log`/`.txt`） | @当事人发轻提示（指导正确打包日志包）+ 拦截 |
 | 分析工具联系不上 | @当事人提示稍后重试 + 拦截 |
 | `/maa` 开头的指令 | 静默拦截 |
 | 引用 Bot 发出的分析结果消息追问 | 静默拦截（analyzer 负责答疑） |
@@ -218,12 +218,12 @@ analyzer 识别哪些群、哪些文件名，取决于它的 `config.json`；本
 
 ## 典型使用流程
 
-1. 群友上传文件名带日志信号的 .zip（如 `debug.zip`、`MaaNikke-logs-….zip`）→ analyzer 下载、校验内容、分析并把结论发回群里，AstrBot 不出声
+1. 群友上传文件名带日志信号的压缩包（如 `debug.zip`、`logs.7z`、`MaaNikke-logs-….zip`）→ analyzer 下载、转换格式、校验内容、分析并把结论发回群里，AstrBot 不出声
 2. 群友上传与日志无关的文件 → 无人搭话，不打扰
 3. 群友传的压缩包名字像日志但里面没有日志内容 → analyzer 回群询问是不是要重传、还是其他文件
 4. 群友引用分析结果追问"这个报错怎么解决" → analyzer 继续回答，AstrBot 不插嘴
 5. 群友发 `/maa 状态` → analyzer 应答
-6. 群友把日志压成了 7z/rar，或解压后分开发 → @当事人收到打包指导提醒
+6. 群友直接发裸 `.log`/`.txt` 文件，或解压后分开发 → @当事人收到打包指导提醒
 
 ## 常见问题
 
@@ -250,6 +250,7 @@ analyzer 启动日志里应有 `[门槛] 本地 API 已启动: http://127.0.0.1:
 
 ## 更新日志
 
+- **v0.7.1**：analyzer 支持 7z/rar/tar/tar.gz/tgz/tar.bz2/tar.xz 等格式——下载后自动解包转成标准 zip 再分析（依赖系统 7z，已含 tar.gz 双层解压、路径穿越/压缩炸弹防护、损坏包明确报错）；插件侧同步放行这些格式的日志包，轻提示只留给裸 .log/.txt 文件
 - **v0.7.0**：门槛判定改为文件名确定性规则——文件名含 debug/log/日志/maa/error/crash 等信号的 .zip 才转发 analyzer 下载分析（不再调用模型，零误判零 token 消耗），文件名像日志包但不是 .zip（7z/rar）时发轻提示指导打包，其余上传静默；analyzer 侧配套新增下载后的内容校验：包内没有 .log/配置/错误截图时不浪费 AI 调用，直接回群询问是不是要重传、还是其他文件
 - **v0.6.1**：新增免分析名单——`skip_file_keywords`（文件名关键词）与 `skip_uploader_ids`（上传者 QQ）任一命中，上传直接静默跳过：不分析、不提醒、连模型门槛判定都不调用，适合明确不是日志的压缩包或管理员自己传文件
 - **v0.6.0**：新增 `maa_analyze_log` 工具——群友用自然语言点名分析已上传/群文件里的日志包（"分析刚才那个 debug.zip""分析最新的日志包"），模型直接调用工具提交分析，结果发回群里；analyzer gate API 相应新增 `GET /files` 与 `/analyze` 的 `force` 参数（门槛误判后的补救）。顺带纳入 file 消息入口补传下载 url 的改动
