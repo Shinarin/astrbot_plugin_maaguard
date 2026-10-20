@@ -4,9 +4,9 @@ MAA 日志分析"守门"插件，配合独立运行的 OnebotMaaLogAnalyzer（�
 
 - 会触发 analyzer 的消息（日志压缩包上传、/maa 指令、引用分析结果的追问）
   一律静默拦截 AstrBot，避免同一身份双重回复；
-- 门槛模式（默认开启）：群内的 zip/文件上传先交给模型判定是否想分析日志，
-  判定为是才把文件转发给 analyzer 的本地 gate API；判定为否静默放行；
-  模型不可用或 analyzer 拒绝时自动回退旧规则（文件名前缀匹配 + 格式提醒）；
+- 门槛模式（默认开启）：群内上传的文件，只有文件名带 debug/log 等日志信号
+  才转发给 analyzer 的本地 gate API 去下载分析；其余上传静默放行；
+  analyzer 下载后还会校验包内内容，确实不是日志会在群里询问是否重传；
 - QQ 一次文件上传会产生 notice 与 file 消息两个事件，处理按 (群, 文件名) 去重；
 - 可选：配置 analyzer_config_path 后，监听群与文件名前缀直接以 analyzer
   的 config.json 为准（读取失败自动回退本地配置）。
@@ -62,7 +62,7 @@ GATE_DOWN_REMINDER = (
     "看起来你想分析 MAA 日志，但分析工具暂时联系不上（{detail}），"
     "请稍后重试或联系管理员。"
 )
-# 门槛判定为 NO、但文件名像日志包时的轻提示（指导正确打包，语气比旧提醒轻）
+# 门槛模式下：文件名像日志包但格式不对（7z/rar 等）时的轻提示（指导正确打包）
 GATE_HINT = (
     "如果这是想分析 MAA 日志：把 MaaNikke 目录下的 debug 文件夹整个压成 1 个 "
     "zip 发上来即可——不用改名，也别用软件自带导出（会拆成多个包）；"
@@ -118,35 +118,6 @@ _SKIP_EXTS = {
 }
 _MAX_FILE_BYTES = 512 * 1024
 _SEARCH_RESULT_MAX_CHARS = 6000
-
-# 上传意图判定提示词：只要求输出 YES / NO，便于严格解析
-INTENT_JUDGE_PROMPT = """你在一个 QQ 群里，群里的机器人提供「MaaNikke 自动化脚本日志分析」服务：群友上传日志压缩包，机器人下载、提取报错并用 AI 分析原因。
-
-现在有人上传了一个文件，请判断上传者是否希望机器人分析日志、帮忙排查问题。
-
-文件信息：
-- 文件名：{file_name}
-- 大小：{size}{caption}
-
-判断为 YES 的典型信号：文件名含 log / 日志 / debug / maa / error / crash 等，或附言里请求帮忙看日志、分析报错、任务为什么失败、帮我看看等。
-判断为 NO 的典型情况：与日志排查明显无关的分享（安装包、资源包、图片包、文档、存档等），且附言没有求助分析的意思。
-难以判断时按 NO 处理。
-
-只回答 YES 或 NO，不要输出任何其他内容。"""
-
-
-def _human_size(value) -> str:
-    """把字节数格式化为可读大小；未知返回「未知」。"""
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return "未知"
-    if n <= 0:
-        return "未知"
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
-            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
-        n /= 1024
 
 
 def _normalize_prefixes(prefixes) -> tuple[str, ...]:
@@ -424,7 +395,7 @@ class MaaGuardPlugin(Star):
         example = f"{sorted(self._prefixes())[0]}-20260928-120000.zip"
         return self._at_chain(event, REMINDER.format(example=example))
 
-    # ── 门槛模式：模型判定 + 转发 analyzer ───────────────
+    # ── 门槛模式：文件名判定 + 转发 analyzer ─────────────
 
     @staticmethod
     def _extract_uploads(event: AstrMessageEvent, raw: dict) -> list:
@@ -462,40 +433,6 @@ class MaaGuardPlugin(Star):
                 "url": str(getattr(c, "url", "") or data.get("url") or ""),
             })
         return uploads
-
-    async def _judge_upload_intent(self, event: AstrMessageEvent,
-                                   meta: dict,
-                                   message_str: str) -> bool | None:
-        """调用 AstrBot 配置的模型判定上传意图。返回 True/False，失败为 None。"""
-        try:
-            provider = await self.context.get_using_provider_async()
-        except Exception as exc:
-            logger.warning(f"[maaguard] 获取 LLM provider 失败: {exc}")
-            return None
-        if provider is None:
-            logger.warning("[maaguard] 未配置对话模型，门槛判定不可用")
-            return None
-
-        caption = f"\n- 附言：{message_str}" if message_str else ""
-        prompt = INTENT_JUDGE_PROMPT.format(
-            file_name=meta.get("name") or "未知",
-            size=_human_size(meta.get("size")),
-            caption=caption,
-        )
-        try:
-            resp = await asyncio.wait_for(provider.text_chat(prompt=prompt),
-                                          timeout=60)
-            text = (getattr(resp, "completion_text", "") or "").strip().upper()
-        except Exception as exc:
-            logger.warning(f"[maaguard] 门槛判定调用失败: {exc}")
-            return None
-
-        if text.startswith("YES"):
-            return True
-        if text.startswith("NO"):
-            return False
-        logger.warning(f"[maaguard] 门槛判定输出无法解析: {text[:50]!r}")
-        return None
 
     async def _forward_to_analyzer(self, meta: dict, group_id: str,
                                    event: AstrMessageEvent) -> tuple[str, str]:
@@ -536,14 +473,17 @@ class MaaGuardPlugin(Star):
             return "error", str(exc)[:120]
 
     async def _handle_gate_uploads(self, event: AstrMessageEvent,
-                                   uploads: list, group_id: str,
-                                   message_str: str):
-        """门槛模式主流程：模型判定 → 转发 analyzer / 静默 / 回退旧规则。"""
+                                   uploads: list, group_id: str):
+        """门槛模式主流程：文件名确定性判定 → 转发 analyzer / 轻提示 / 静默。
+
+        只有文件名带 debug/log 等日志信号的文件才转发给 analyzer 下载；
+        analyzer 下载后还会校验包内内容，确实不是日志会在群里询问是否重传。
+        """
         for meta in uploads:
             name = str(meta.get("name") or "")
             if not name:
                 continue
-            # 免分析名单（文件名关键词 / 上传者 QQ）：确定性跳过，连模型判定都不调用
+            # 免分析名单（文件名关键词 / 上传者 QQ）：确定性跳过
             if self._should_skip_upload(meta, event):
                 logger.info(f"[maaguard] 免分析名单命中: {name}，静默跳过")
                 continue
@@ -554,29 +494,14 @@ class MaaGuardPlugin(Star):
                     await self._forward_to_analyzer(meta, group_id, event)
                 continue
 
-            decision = await self._judge_upload_intent(event, meta, message_str)
-            if decision is None:
-                # 模型不可用：回退旧规则。match 必须转发——门槛模式下
-                # analyzer 不会按前缀自动触发，不转就丢了这个包
-                result = classify_upload(name, self._prefixes())
-                if result == MATCH:
-                    decision = True
-                elif result == NEAR_MISS:
-                    if not self._reminder_recently_sent(("file", group_id, name)):
-                        logger.info(f"[maaguard] 模型不可用，旧规则提醒: {name}")
-                        yield event.chain_result(self._reminder_chain(event))
-                    continue
-                else:
-                    continue  # 与日志无关：静默
+            if not looks_log_related(name):
+                logger.info(f"[maaguard] 门槛判定无关: {name}，静默")
+                continue
 
-            if not decision:
-                # 模型说 NO，但文件名有较强日志信号：可能是误判或打包方式
-                # 不对，发轻提示指导正确打包；其余文件依旧静默
-                if looks_log_related(name):
-                    logger.info(f"[maaguard] 门槛判定 NO 但疑似日志包: {name}，发轻提示")
-                    yield event.chain_result(self._at_chain(event, GATE_HINT))
-                else:
-                    logger.info(f"[maaguard] 门槛判定 NO: {name}，静默")
+            if not name.lower().endswith(".zip"):
+                # 像日志包但格式不对（7z/rar 等）：发轻提示指导正确打包
+                logger.info(f"[maaguard] 疑似日志包但非 zip: {name}，发轻提示")
+                yield event.chain_result(self._at_chain(event, GATE_HINT))
                 continue
 
             status, reason = await self._forward_to_analyzer(
@@ -982,12 +907,12 @@ class MaaGuardPlugin(Star):
         group_id = str(event.get_group_id())
         prefixes = self._prefixes()
 
-        # 0) 门槛模式：文件上传先由模型判定意图，再决定是否转发 analyzer
+        # 0) 门槛模式：文件上传按文件名日志信号判定，命中才转发 analyzer
         if self._gate_enabled():
             uploads = self._extract_uploads(event, raw)
             if uploads:
                 async for result in self._handle_gate_uploads(
-                    event, uploads, group_id, message_str
+                    event, uploads, group_id
                 ):
                     yield result
                 # 无论判定结果如何，含文件的事件都不再由 AstrBot 回复

@@ -29,10 +29,10 @@
     "hint": "analyzer 发出的分析结果消息里包含这些词时，引用它的追问会被本插件静默拦截"
   },
   "gate_enabled": {
-    "description": "门槛模式：文件上传先由模型判定是否想分析日志，判定为是才转发 analyzer",
+    "description": "门槛模式：文件上传先按文件名判定（含 debug/log/日志等关键词的 zip 才转发 analyzer 下载分析），analyzer 下载后还会校验包内内容，不是日志会在群里询问是否重传",
     "type": "bool",
     "default": true,
-    "hint": "需要 analyzer 启用 gate（config.json 里 gate.enabled=true）并与其 token 保持一致。模型不可用或 analyzer 拒绝时自动回退旧规则"
+    "hint": "需要 analyzer 启用 gate（config.json 里 gate.enabled=true）并与其 token 保持一致。analyzer 拒绝时提醒当事人"
   },
   "gate_analyzer_url": {
     "description": "analyzer 本地 gate API 地址",
